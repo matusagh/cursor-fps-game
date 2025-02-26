@@ -1,0 +1,2233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple FPS Game</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #1a1a1a; /* Dark MW2-like background */
+            font-family: monospace;
+        }
+        canvas {
+            display: block;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            transition: transform 0.05s ease-out; /* Add transition for smooth animation */
+        }
+        .crosshair-line {
+            position: absolute;
+            background: rgba(255, 255, 255, 0.8);
+            transition: all 0.05s ease; /* Add transition for smooth animation */
+        }
+        /* Horizontal lines */
+        .crosshair-line.horizontal {
+            width: 8px;
+            height: 2px;
+        }
+        /* Vertical lines */
+        .crosshair-line.vertical {
+            width: 2px;
+            height: 8px;
+        }
+        /* Position the lines */
+        .left { transform: translateX(-12px); }
+        .right { transform: translateX(4px); }
+        .top { transform: translateY(-12px); }
+        .bottom { transform: translateY(4px); }
+        
+        /* Add firing animation classes */
+        .firing .left { transform: translateX(-16px); }
+        .firing .right { transform: translateX(8px); }
+        .firing .top { transform: translateY(-16px); }
+        .firing .bottom { transform: translateY(8px); }
+
+        #gameInfo {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: #00ff00;
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #00ff00;
+            font-size: 12px;
+            width: 200px;
+            z-index: 1000;
+            pointer-events: none;
+            font-family: monospace;
+            line-height: 1.5;
+            text-shadow: 0 0 2px #00ff00;
+        }
+
+        #gameInfo h3 {
+            margin: 0 0 5px 0;
+            padding-bottom: 5px;
+            border-bottom: 1px solid #00ff00;
+            font-size: 14px;
+            text-align: center;
+        }
+
+        .infoValue {
+            float: right;
+            color: #ffffff;
+        }
+    </style>
+</head>
+<body>
+    <div id="crosshair">
+        <div class="crosshair-line horizontal left"></div>
+        <div class="crosshair-line horizontal right"></div>
+        <div class="crosshair-line vertical top"></div>
+        <div class="crosshair-line vertical bottom"></div>
+    </div>
+    <div id="gameInfo">
+        <div>FPS: <span id="fps" class="infoValue">0</span></div>
+        <div>Position: <span id="position" class="infoValue">0, 0, 0</span></div>
+        <div>Velocity: <span id="velocity" class="infoValue">0</span></div>
+        <div>Direction: <span id="direction" class="infoValue">0°</span></div>
+        <div>Active Keys: <span id="activeKeys" class="infoValue">None</span></div>
+        <div>Bullets: <span id="bulletCount" class="infoValue">0</span></div>
+        <div>Particles: <span id="particleCount" class="infoValue">0</span></div>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script>
+        // Scene setup
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Add camera to scene first (this is important!)
+        scene.add(camera);
+
+        // Player variables
+        const player = {
+            speed: 0.09,           // Keep same speed
+            sprintSpeed: 0.12,     // Keep same sprint
+            velocity: new THREE.Vector3(),
+            canJump: true,
+            jumpForce: 0.15,       // Keep same jump force
+            gravity: 0.004,        // Keep same gravity
+            maxFallSpeed: 0.35,    // Keep same fall speed
+            groundLevel: 2.2,      // Increased from 2.0 to 2.2 for taller height
+            isGrounded: true,
+            groundCheckOffset: 2.3, // Increased from 2.1 to 2.3
+            acceleration: 0.08,
+            deceleration: 0.15
+        };
+        camera.position.set(0, 2.2, 10);  // Set starting position with Z=10
+
+        // Mouse look
+        let mouseX = 0, mouseY = 0;
+        document.body.requestPointerLock = document.body.requestPointerLock || document.body.mozRequestPointerLock;
+        document.addEventListener('click', () => document.body.requestPointerLock());
+        let actualRotationX = 0;  // Track the actual camera rotation without recoil
+        let actualRotationY = 0;
+        document.addEventListener('mousemove', (e) => {
+            if (document.pointerLockElement === document.body) {
+                mouseX -= e.movementX * 0.002;
+                mouseY -= e.movementY * 0.002;
+                mouseY = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, mouseY));
+                
+                actualRotationX = mouseY;
+                actualRotationY = mouseX;
+                
+                camera.rotation.order = 'YXZ';
+                camera.rotation.x = actualRotationX;
+                camera.rotation.y = actualRotationY;
+            }
+        });
+
+        // Add these texture loading lines after scene setup
+        const textureLoader = new THREE.TextureLoader();
+
+        // Sky setup with sun and clouds
+        const skyGeometry = new THREE.SphereGeometry(500, 32, 32);
+        const skyMaterial = new THREE.MeshBasicMaterial({
+            color: 0x87CEEB,  // Sky blue
+            side: THREE.BackSide
+        });
+        const sky = new THREE.Mesh(skyGeometry, skyMaterial);
+        scene.add(sky);
+
+        // Sun
+        const sunGeometry = new THREE.SphereGeometry(20, 32, 32);
+        const sunMaterial = new THREE.MeshBasicMaterial({
+            color: 0xffff00,
+            transparent: true,
+            opacity: 0.8
+        });
+        const sun = new THREE.Mesh(sunGeometry, sunMaterial);
+        sun.position.set(200, 300, -400);
+        scene.add(sun);
+
+        // Sun glow
+        const sunGlowGeometry = new THREE.SphereGeometry(25, 32, 32);
+        const sunGlowMaterial = new THREE.MeshBasicMaterial({
+            color: 0xffff00,
+            transparent: true,
+            opacity: 0.2
+        });
+        const sunGlow = new THREE.Mesh(sunGlowGeometry, sunGlowMaterial);
+        sun.add(sunGlow);
+
+        // Ground texture
+        const groundTexture = textureLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/textures/terrain/grasslight-big.jpg');
+        groundTexture.wrapS = groundTexture.wrapT = THREE.RepeatWrapping;
+        groundTexture.repeat.set(50, 50);
+        groundTexture.anisotropy = 16;
+
+        // Wall texture
+        const wallTexture = textureLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/textures/brick_diffuse.jpg');
+        wallTexture.wrapS = wallTexture.wrapT = THREE.RepeatWrapping;
+        wallTexture.repeat.set(5, 2);
+
+        // Barrier texture
+        const barrierTexture = textureLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/textures/crate.gif');
+        barrierTexture.wrapS = barrierTexture.wrapT = THREE.RepeatWrapping;
+
+        // Update ground material
+        const groundMaterial = new THREE.MeshStandardMaterial({ 
+            map: groundTexture,
+            roughness: 0.8,
+            metalness: 0.2
+        });
+
+        // Create textured ground
+        const groundGeometry = new THREE.PlaneGeometry(200, 200);
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = -Math.PI / 2;
+        scene.add(ground);
+
+        // Add target properties for explosion behavior
+        const targetProperties = {
+            hitPoints: 3,        // Hits needed to explode
+            respawnTime: 7000,   // 7 seconds in milliseconds
+            flashDuration: 150   // Flash duration when hit
+        };
+
+        // Modify the createTarget function to better store the original material
+        function createTarget(x, y, z) {
+            const targetGeometry = new THREE.BoxGeometry(2, 2, 2);
+            const targetMaterial = new THREE.MeshStandardMaterial({ 
+                color: 0xff4444,
+                roughness: 0.5,
+                metalness: 0.5,
+                emissive: 0x441111
+            });
+            const target = new THREE.Mesh(targetGeometry, targetMaterial);
+            target.position.set(x, y, z);
+            
+            // Store the original material properties explicitly
+            target.userData = {
+                health: targetProperties.hitPoints,
+                originalPosition: target.position.clone(),
+                originalColor: targetMaterial.color.clone(),
+                originalEmissive: targetMaterial.emissive.clone(),
+                originalRoughness: targetMaterial.roughness,
+                originalMetalness: targetMaterial.metalness,
+                isExploding: false,
+                isRespawning: false
+            };
+            
+            scene.add(target);
+            return target;
+        }
+
+        // Create multiple targets
+        const targets = [
+            createTarget(-10, 1, -15),
+            createTarget(10, 1, -15),
+            createTarget(0, 3, -20),
+            createTarget(-5, 4, -25),
+            createTarget(5, 4, -25),
+            createTarget(-15, 2, -30),
+            createTarget(15, 2, -30)
+        ];
+
+        // Add some walls and barriers
+        function createWall(x, y, z, width, height, depth, isBarrier = false) {
+            const wallGeometry = new THREE.BoxGeometry(width, height, depth);
+            const wallMaterial = new THREE.MeshStandardMaterial({ 
+                map: isBarrier ? barrierTexture : wallTexture,
+                roughness: 0.7,
+                metalness: 0.3
+            });
+            const wall = new THREE.Mesh(wallGeometry, wallMaterial);
+            wall.position.set(x, y, z);
+            scene.add(wall);
+            return wall;
+        }
+
+        // Create walls and barriers - removing all surrounding walls
+        const walls = [
+            // All walls removed
+        ];
+
+        // Add these variables near the top of your script, after the other declarations
+        const crateProperties = {
+            hitPoints: 3,        // Hits needed to explode
+            respawnTime: 7000,   // 7 seconds in milliseconds
+            flashDuration: 150   // Flash duration when hit
+        };
+
+        // Modify the createCrate function to better preserve the original material
+        function createCrate(x, y, z, originalPosition = null) {
+            const crateTexture = textureLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/textures/crate.gif');
+            const crateGeometry = new THREE.BoxGeometry(2, 2, 2);
+            const crateMaterial = new THREE.MeshBasicMaterial({ map: crateTexture });
+            const crate = new THREE.Mesh(crateGeometry, crateMaterial);
+            
+            // Store the original position if provided, otherwise use the current position
+            const position = originalPosition || new THREE.Vector3(x, y, z);
+            crate.position.copy(position);
+            
+            // Store the texture and original material
+            crate.userData = {
+                health: crateProperties.hitPoints,
+                originalPosition: position.clone(),
+                originalMaterial: crateMaterial.clone(),
+                originalTexture: crateTexture,
+                isExploding: false,
+                isRespawning: false
+            };
+            
+            scene.add(crate);
+            return crate;
+        }
+
+        // Create multiple crates
+        const crates = [
+            createCrate(-12, 1, -8),
+            createCrate(-14, 1, -8),
+            createCrate(-13, 3, -8),
+            createCrate(12, 1, -8),
+            createCrate(14, 1, -8),
+            createCrate(13, 3, -8)
+        ];
+
+        // Add ambient light
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+
+        // Add directional light (sunlight)
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(100, 100, 0);
+        scene.add(directionalLight);
+
+        // Controls
+        const keys = {};
+        document.addEventListener('keydown', (e) => keys[e.code] = true);
+        document.addEventListener('keyup', (e) => keys[e.code] = false);
+
+        // Weapon properties
+        const weaponProperties = {
+            automatic: true,
+            fireRate: 100,
+            recoilAmount: 0.005,
+            recoilRecovery: 0.90,
+            maxRecoil: 0.1,
+            lastFired: 0
+        };
+
+        // Recoil variables
+        let currentRecoil = 0;
+        let recoilX = 0;
+        let recoilY = 0;
+        let isShooting = false;
+
+        // Bullet properties
+        const bulletProperties = {
+            speed: 8.0,         // Faster bullets
+            size: 0.03,         // Slightly smaller bullets
+            range: 1000,
+            color: 0xffff00,    // Bright yellow
+            damage: 25
+        };
+
+        // Update the impact effects configuration for more visual appeal
+        const impactEffects = {
+            particles: {
+                count: 15,           // More particles
+                speed: 0.4,          // Faster particles
+                size: 0.03,          // Slightly smaller particles
+                lifetime: 800,       // Longer lifetime
+                color: 0xff4400,     // Orange-red color
+                sizeVariation: 0.5   // Add size variation
+            },
+            flash: {
+                size: 0.3,           // Larger flash
+                duration: 150,       // Flash duration
+                color: 0xffff00      // Bright yellow
+            },
+            sparks: {                // Enhance sparks
+                count: 12,           // More sparks
+                speed: 0.7,          // Faster sparks
+                size: 0.015,         // Smaller, more delicate sparks
+                lifetime: 500,       // Longer lifetime
+                color: 0xffffcc      // Bright yellow-white color
+            },
+            shockwave: {             // Add shock wave effect
+                size: 0.1,           // Initial size
+                maxSize: 1.5,        // Maximum expansion
+                duration: 300,       // Duration in ms
+                color: 0xffffaa      // Light yellow color
+            },
+            debris: {                // Add debris effect for certain surfaces
+                count: 6,
+                speed: 0.3,
+                size: 0.05,
+                lifetime: 1200,
+                color: 0x888888
+            }
+        };
+
+        // Improve the ImpactParticle class with more visual variety
+        class ImpactParticle {
+            constructor(position, normal, properties) {
+                // Random size variation if specified
+                const sizeVariation = properties.sizeVariation || 0;
+                const particleSize = properties.size * (1 - sizeVariation + Math.random() * sizeVariation * 2);
+                
+                const geometry = new THREE.SphereGeometry(particleSize);
+                
+                // Add some color variation
+                const hue = Math.random() * 0.1 - 0.05; // Small random hue shift
+                const color = new THREE.Color(properties.color);
+                color.offsetHSL(hue, 0, Math.random() * 0.2);
+                
+                const material = new THREE.MeshBasicMaterial({
+                    color: color,
+                    transparent: true,
+                    opacity: 1
+                });
+                this.mesh = new THREE.Mesh(geometry, material);
+                this.mesh.position.copy(position);
+                
+                // Calculate spread direction based on normal with improved distribution
+                const spread = Math.PI / 3;  // 60-degree spread
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.random() * spread;
+                
+                this.direction = new THREE.Vector3(
+                    Math.sin(phi) * Math.cos(theta),
+                    Math.cos(phi),
+                    Math.sin(phi) * Math.sin(theta)
+                );
+                
+                // Align with normal
+                const normalMatrix = new THREE.Matrix4().lookAt(
+                    new THREE.Vector3(),
+                    normal,
+                    new THREE.Vector3(0, 1, 0)
+                );
+                this.direction.applyMatrix4(normalMatrix);
+                
+                // Add some randomness to speed
+                this.speed = properties.speed * (0.5 + Math.random() * 0.8);
+                this.rotationSpeed = Math.random() * 0.2 - 0.1;
+                this.createdAt = Date.now();
+                this.lifetime = properties.lifetime * (0.8 + Math.random() * 0.4); // Lifetime variation
+                scene.add(this.mesh);
+            }
+
+            update() {
+                const age = Date.now() - this.createdAt;
+                const lifeRatio = age / this.lifetime;
+                
+                if (lifeRatio >= 1 || age > 5000) { // Add hard 5-second limit
+                    scene.remove(this.mesh);
+                    return false;
+                }
+                
+                // Update position with gravity and deceleration
+                this.direction.y -= 0.02;  // Increased gravity effect
+                this.speed *= 0.97;        // Slow down over time
+                
+                this.mesh.position.add(this.direction.clone().multiplyScalar(this.speed));
+                
+                // Add rotation to particles
+                this.mesh.rotation.x += this.rotationSpeed;
+                this.mesh.rotation.z += this.rotationSpeed * 0.7;
+                
+                // Fade out with slight pulsing
+                const pulse = Math.sin(lifeRatio * Math.PI * 6) * 0.15 + 0.85;
+                this.mesh.material.opacity = (1 - lifeRatio) * pulse;
+                
+                return true;
+            }
+        }
+
+        // Add a new class for shockwave effect
+        class ShockwaveEffect {
+            constructor(position, normal, properties) {
+                // Create a ring geometry for the shockwave
+                const ringGeometry = new THREE.RingGeometry(
+                    properties.size, // inner radius
+                    properties.size * 1.2, // outer radius
+                    16 // segments
+                );
+                
+                const material = new THREE.MeshBasicMaterial({
+                    color: properties.color,
+                    transparent: true,
+                    opacity: 0.9,
+                    side: THREE.DoubleSide
+                });
+                
+                this.mesh = new THREE.Mesh(ringGeometry, material);
+                
+                // Align with surface normal
+                this.mesh.lookAt(normal);
+                
+                // Position slightly above surface to prevent z-fighting
+                const surfaceOffset = 0.01;
+                this.mesh.position.copy(position).addScaledVector(normal, surfaceOffset);
+                
+                this.maxSize = properties.maxSize;
+                this.duration = properties.duration;
+                this.createdAt = Date.now();
+                
+                scene.add(this.mesh);
+            }
+            
+            update() {
+                const age = Date.now() - this.createdAt;
+                const lifeRatio = age / this.duration;
+                
+                if (age > this.duration || age > 5000) { // Add hard 5-second limit
+                    scene.remove(this.mesh);
+                    return false;
+                }
+                
+                // Scale up over time
+                const scale = this.maxSize * lifeRatio;
+                this.mesh.scale.set(scale, scale, scale);
+                
+                // Fade out
+                this.mesh.material.opacity = 0.9 * (1 - lifeRatio);
+                
+                return true;
+            }
+        }
+
+        // Add array for shockwave effects
+        const shockwaveEffects = [];
+
+        // Add array to track impact particles
+        const impactParticles = [];
+
+        // Update the createImpactEffect function with improved effects
+        function createImpactEffect(position, normal = new THREE.Vector3(0, 1, 0)) {
+            // Create a small flash
+            const flashGeo = new THREE.SphereGeometry(impactEffects.flash.size * 0.3);
+            const flashMat = new THREE.MeshBasicMaterial({
+                color: impactEffects.flash.color,
+                transparent: true,
+                opacity: 0.7
+            });
+            const flash = new THREE.Mesh(flashGeo, flashMat);
+            flash.position.copy(position);
+            flash.position.addScaledVector(normal, 0.05); // Position slightly above surface
+            scene.add(flash);
+            
+            // Fade out flash quickly
+            const startTime = Date.now();
+            function updateFlash() {
+                const age = Date.now() - startTime;
+                if (age < impactEffects.flash.duration) {
+                    flash.material.opacity = 0.7 * (1 - (age / impactEffects.flash.duration));
+                    requestAnimationFrame(updateFlash);
+                } else {
+                    scene.remove(flash);
+                }
+            }
+            updateFlash();
+            
+            // Create shockwave effect
+            const shockwave = new ShockwaveEffect(position, normal, impactEffects.shockwave);
+            shockwaveEffects.push(shockwave);
+            
+            // Create particles along normal direction with more variation
+            for (let i = 0; i < impactEffects.particles.count; i++) {
+                const particle = new ImpactParticle(position, normal, impactEffects.particles);
+                impactParticles.push(particle);
+            }
+            
+            // Create sparks
+            for (let i = 0; i < impactEffects.sparks.count; i++) {
+                const spark = new ImpactParticle(position, normal, impactEffects.sparks);
+                spark.mesh.material.color.setHex(0xffffcc);
+                impactParticles.push(spark);
+            }
+            
+            // Add debris pieces for certain surfaces (like ground or walls)
+            // Detect surface type based on normal direction
+            const isGround = normal.y > 0.8;
+            const isWall = Math.abs(normal.y) < 0.3;
+            
+            if (isGround || isWall) {
+                const debrisColor = isGround ? 0xaa9977 : 0x999999;
+                for (let i = 0; i < impactEffects.debris.count; i++) {
+                    const debrisProps = {...impactEffects.debris, color: debrisColor};
+                    const debris = new ImpactParticle(position, normal, debrisProps);
+                    // Give debris a more random direction and lower speed
+                    debris.direction.x += (Math.random() - 0.5) * 0.5;
+                    debris.direction.z += (Math.random() - 0.5) * 0.5;
+                    debris.speed *= 0.7;
+                    impactParticles.push(debris);
+                }
+            }
+        }
+
+        // Bullet array
+        const bullets = [];
+
+        // Audio setup
+        const audioListener = new THREE.AudioListener();
+        camera.add(audioListener);
+
+        // Sound effects
+        const sounds = {
+            shoot: new Audio('https://freesound.org/data/previews/163/163457_2263027-lq.mp3'),
+            footstep: new Audio('https://www.myinstants.com/media/sounds/footstep.mp3'),
+            explosionSounds: [
+                new Audio('https://www.myinstants.com/media/sounds/roblox-death-sound-effect.mp3'),
+                new Audio('https://www.myinstants.com/media/sounds/lego-breaking.mp3'),
+                new Audio('https://www.myinstants.com/media/sounds/rizz-sounds.mp3'),
+                new Audio('https://www.myinstants.com/media/sounds/classic_hurt.mp3'),
+                new Audio('https://www.myinstants.com/media/sounds/fart-with-reverb.mp3'),
+                new Audio('https://www.myinstants.com/media/sounds/old-spice-whistle-hq.mp3'),
+                new Audio('https://www.myinstants.com/media/sounds/jolanda-a-jeje.mp3')
+            ],
+            explosionSoundIndex: 0,
+            jumpPad: new Audio('https://www.myinstants.com/media/sounds/jump-boing.mp3'),
+            gunshot: null,
+            topPad: new Audio('https://www.myinstants.com/media/sounds/my-movie-6_0RlWMvM.mp3')
+        };
+
+        // Configure sounds
+        Object.values(sounds).forEach(sound => {
+            if (sound instanceof Audio) {
+                sound.volume = 0.2;
+                sound.onerror = (e) => console.log('Sound loading error:', e);
+            }
+        });
+        sounds.explosionSounds.forEach(sound => {
+            sound.volume = 0.2;
+            sound.onerror = (e) => console.log('Sound loading error:', e);
+        });
+        sounds.footstep.volume = 0.1;
+
+        // Initialize sounds
+        document.addEventListener('click', function initSound() {
+            Object.values(sounds).forEach(sound => {
+                sound.play().catch(() => {});
+                sound.pause();
+                sound.currentTime = 0;
+            });
+            document.removeEventListener('click', initSound);
+        }, { once: true });
+
+        // Footstep timing
+        let lastFootstep = 0;
+        const footstepDelay = 400;
+
+        function shoot() {
+            const now = Date.now();
+            if (now - weaponProperties.lastFired < weaponProperties.fireRate) {
+                return;
+            }
+
+            sounds.shoot.currentTime = 0;
+            sounds.shoot.play();
+            
+            // Add visual feedback on crosshair when firing
+            const crosshair = document.getElementById('crosshair');
+            crosshair.classList.add('firing');
+            setTimeout(() => {
+                crosshair.classList.remove('firing');
+            }, 100); // Remove effect after 100ms
+
+            // Create bullet
+            const bulletGeometry = new THREE.SphereGeometry(bulletProperties.size);
+            const bulletMaterial = new THREE.MeshBasicMaterial({ color: bulletProperties.color });
+            const bullet = new THREE.Mesh(bulletGeometry, bulletMaterial);
+
+            // Set bullet starting position exactly at camera position
+            bullet.position.copy(camera.position);
+
+            // Get exact camera direction
+            const direction = new THREE.Vector3(0, 0, -1);
+            direction.applyQuaternion(camera.quaternion);
+
+            // Apply minimal spread
+            const isMoving = keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'];
+            const baseSpread = 0.001; // Very small base spread
+            const spread = isMoving ? baseSpread * 1.2 : baseSpread;
+            
+            // Apply spread directly to direction
+            direction.x += (Math.random() - 0.5) * spread;
+            direction.y += (Math.random() - 0.5) * spread;
+            direction.normalize();
+
+            // Store direction for bullet movement
+            bullet.userData.direction = direction;
+            bullet.userData.distanceTraveled = 0;
+
+            scene.add(bullet);
+            bullets.push(bullet);
+
+            // Apply recoil
+            currentRecoil = Math.min(currentRecoil + weaponProperties.recoilAmount, weaponProperties.maxRecoil);
+            recoilY += weaponProperties.recoilAmount * 0.6;
+            recoilX += (Math.random() - 0.5) * weaponProperties.recoilAmount * 0.3;
+            camera.rotation.x = actualRotationX - recoilY;
+            camera.rotation.y = actualRotationY - recoilX;
+
+            weaponProperties.lastFired = now;
+        }
+
+        document.addEventListener('mousedown', (e) => {
+            if (document.pointerLockElement === document.body && e.button === 0) {
+                isShooting = true;
+                shoot();
+            }
+        });
+
+        document.addEventListener('mouseup', (e) => {
+            if (e.button === 0) {
+                isShooting = false;
+            }
+        });
+
+        // Update the collision detection and player movement code
+        function checkCollision(position, objects) {
+            const playerRadius = 0.5;  // Player collision radius
+            const playerHeight = 2;    // Player height
+            const margin = 0.1;        // Small margin to prevent getting stuck
+
+            for (const obj of objects) {
+                if (!obj.geometry) continue;
+                
+                // Skip pictures - we want to walk through them
+                if (obj.userData && obj.userData.isPicture) continue;
+
+                // Get object bounds with margin
+                const box = new THREE.Box3().setFromObject(obj);
+                box.min.add(new THREE.Vector3(margin, margin, margin));
+                box.max.sub(new THREE.Vector3(margin, margin, margin));
+
+                const playerBox = new THREE.Box3().set(
+                    new THREE.Vector3(
+                        position.x - playerRadius,
+                        position.y - playerHeight/2,
+                        position.z - playerRadius
+                    ),
+                    new THREE.Vector3(
+                        position.x + playerRadius,
+                        position.y + playerHeight/2,
+                        position.z + playerRadius
+                    )
+                );
+
+                if (box.intersectsBox(playerBox)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // Update the updatePlayer function to normalize diagonal movement
+        function updatePlayer() {
+            // Save old position for collision detection
+            const oldPosition = camera.position.clone();
+            let newPosition = oldPosition.clone();
+
+            // Get current time once - define it here for use throughout the function
+            const now = Date.now();
+
+            // Calculate movement direction
+            let moveX = 0;
+            let moveZ = 0;
+            
+            if (keys['KeyW']) moveZ -= 1;
+            if (keys['KeyS']) moveZ += 1;
+            if (keys['KeyA']) moveX -= 1;
+            if (keys['KeyD']) moveX += 1;
+            
+            // Normalize diagonal movement to prevent faster diagonal speed
+            if (moveX !== 0 && moveZ !== 0) {
+                // Calculate magnitude of the vector (√2 for diagonal)
+                const magnitude = Math.sqrt(moveX * moveX + moveZ * moveZ);
+                // Normalize to length 1
+                moveX /= magnitude;
+                moveZ /= magnitude;
+            }
+            
+            // Apply acceleration and deceleration
+            const moveSpeed = keys['ShiftLeft'] ? player.sprintSpeed : player.speed;
+            
+            if (moveX !== 0) {
+                player.velocity.x = moveX * moveSpeed;
+            } else {
+                // Apply deceleration when no input
+                player.velocity.x *= (1 - player.deceleration);
+            }
+            
+            if (moveZ !== 0) {
+                player.velocity.z = moveZ * moveSpeed;
+            } else {
+                // Apply deceleration when no input
+                player.velocity.z *= (1 - player.deceleration);
+            }
+
+            // Jump handling
+            if (keys['Space'] && player.canJump) {
+                player.velocity.y = player.jumpForce;
+                player.canJump = false;
+                player.isGrounded = false;
+            }
+            
+            // Apply gravity if not grounded
+            if (!player.isGrounded) {
+                player.velocity.y -= player.gravity;
+                if (player.velocity.y < -player.maxFallSpeed) {
+                    player.velocity.y = -player.maxFallSpeed;
+                }
+            }
+
+            // Calculate forward and right vectors based on camera angle
+            const angle = camera.rotation.y;
+            const forward = new THREE.Vector3(
+                Math.sin(angle) * player.velocity.z,
+                0,
+                Math.cos(angle) * player.velocity.z
+            );
+            const right = new THREE.Vector3(
+                Math.sin(angle + Math.PI/2) * player.velocity.x,
+                0,
+                Math.cos(angle + Math.PI/2) * player.velocity.x
+            );
+            
+            // Apply movement
+            newPosition.add(forward);
+            newPosition.add(right);
+            newPosition.y += player.velocity.y;
+
+            // Check for collisions with walls and crates
+            const collidableObjects = [...walls, ...crates, ...targets, ...platforms];
+            const isCollision = checkCollision(newPosition, collidableObjects);
+            
+            if (isCollision) {
+                // Handle X and Z axes separately for sliding along walls
+                const tempPosition = oldPosition.clone();
+                tempPosition.x = newPosition.x;
+                if (checkCollision(tempPosition, collidableObjects)) {
+                    newPosition.x = oldPosition.x;
+                    player.velocity.x = 0;
+                }
+                
+                tempPosition.x = oldPosition.x;
+                tempPosition.z = newPosition.z;
+                if (checkCollision(tempPosition, collidableObjects)) {
+                    newPosition.z = oldPosition.z;
+                    player.velocity.z = 0;
+                }
+            }
+            
+            // Handle falling and ground collision
+            if (newPosition.y < player.groundLevel) {
+                if (player.velocity.y < 0) {
+                    player.isGrounded = true;
+                    player.canJump = true;
+                }
+                newPosition.y = oldPosition.y;
+                player.velocity.y = 0;
+            }
+
+            // Ground check with ray casting
+            const rayCaster = new THREE.Raycaster();
+            rayCaster.ray.origin.copy(newPosition);
+            rayCaster.ray.origin.y += 0.1;  // Slight offset to prevent floating
+            rayCaster.ray.direction.set(0, -1, 0);
+            
+            const groundIntersects = rayCaster.intersectObjects([ground, ...collidableObjects]);
+            const distanceToGround = groundIntersects.length > 0 ? groundIntersects[0].distance : Infinity;
+
+            // Update grounded state and snap to ground if needed
+            if (distanceToGround < player.groundCheckOffset) {
+                player.isGrounded = true;
+                player.canJump = true;
+                newPosition.y = groundIntersects[0].point.y + player.groundLevel;
+            } else {
+                player.isGrounded = false;
+            }
+
+            // Check for jump pad collisions
+            const jumpPadRaycaster = new THREE.Raycaster();
+            jumpPadRaycaster.ray.origin.copy(newPosition);
+            jumpPadRaycaster.ray.origin.y += 0.1;
+            jumpPadRaycaster.ray.direction.set(0, -1, 0);
+            
+            const jumpPadIntersects = jumpPadRaycaster.intersectObjects(jumpPads);
+            if (jumpPadIntersects.length > 0 && jumpPadIntersects[0].distance < jumpPadProperties.detectionRange) {
+                const jumpPad = jumpPadIntersects[0].object;
+                const timeSinceLastUse = now - jumpPad.userData.lastUsed;
+                
+                if (timeSinceLastUse > jumpPadProperties.cooldown) {
+                    // Apply jump boost
+                    player.velocity.y = jumpPadProperties.boostForce;
+                    player.isGrounded = false;
+                    
+                    // Check if this is the top jump pad
+                    if (jumpPad.userData.isTopJumpPad) {
+                        // Play the special top pad sound
+                        playTopPadSound();
+                        console.log("Top pad sound played!");
+                    } else {
+                        // Play regular jump pad sound
+                        if (sounds.jumpPad) {
+                            sounds.jumpPad.currentTime = 0;
+                            sounds.jumpPad.play().catch(err => console.log('Error playing jump sound:', err));
+                        }
+                    }
+                    
+                    // Visual effect
+                    jumpPad.material.emissiveIntensity = 1.0;
+                    setTimeout(() => {
+                        if (jumpPad && jumpPad.material) {
+                            jumpPad.material.emissiveIntensity = 0.7;
+                        }
+                    }, 200);
+                    
+                    // Create jump pad effect
+                    createJumpPadEffect(jumpPad.position.clone());
+                    
+                    // Set cooldown
+                    jumpPad.userData.lastUsed = now;
+                }
+            }
+
+            // Update player position
+            camera.position.copy(newPosition);
+
+            // Handle footstep sounds
+            const isMoving = keys['KeyW'] || keys['KeyS'] || keys['KeyA'] || keys['KeyD'];
+            
+            if (isMoving && Math.abs(player.velocity.y) < 0.001 && now - lastFootstep > footstepDelay) {
+                sounds.footstep.currentTime = 0;
+                sounds.footstep.play().catch(() => {});
+                lastFootstep = now;
+            }
+
+            // Handle recoil recovery
+            if (currentRecoil > 0) {
+                currentRecoil *= weaponProperties.recoilRecovery;
+                recoilY *= weaponProperties.recoilRecovery;
+                recoilX *= weaponProperties.recoilRecovery;
+                
+                camera.rotation.x = actualRotationX - recoilY;
+                camera.rotation.y = actualRotationY - recoilX;
+            }
+
+            // Handle automatic weapon firing
+            if (isShooting && weaponProperties.automatic) {
+                shoot();
+            }
+        }
+
+        // Add flyingTargetProperties if not defined, or update it with knockback properties
+        const flyingTargetProperties = {
+            speed: 0.1,              // Base movement speed
+            hitPoints: 5,            // 5 hits to take down
+            respawnTime: 10000,      // 10 seconds to respawn
+            spawnInterval: 8000,     // New target every 8 seconds
+            maxTargets: 10,          // Maximum targets active at once
+            size: 1.5,               // Size of the target
+            colors: [0xff0000, 0x00ff00, 0x0000ff, 0xffff00, 0xff00ff], // Different colors
+            fallingSpeed: 0.15,      // How fast they fall when hit
+            knockback: {
+                force: 0.5,          // How strongly bullets push the target
+                duration: 500,       // How long the knockback effect lasts (ms)
+                recovery: 0.95       // How quickly the target recovers (0-1)
+            }
+        };
+
+        // Update the updateBullets function with this improved version
+        function updateBullets() {
+            // Loop through all bullets
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const bullet = bullets[i];
+                const prevPosition = bullet.position.clone();
+                
+                // Update bullet position
+                const bulletVelocity = bullet.userData.direction.clone().multiplyScalar(bulletProperties.speed);
+                bullet.position.add(bulletVelocity);
+                bullet.userData.distanceTraveled += bulletProperties.speed;
+                
+                // Create a raycaster from previous position to new position
+                // This ensures we don't miss collisions between frames
+                const raycaster = new THREE.Raycaster(
+                    prevPosition,
+                    bullet.userData.direction,
+                    0,
+                    bulletProperties.speed
+                );
+                
+                // Remove bullet if it traveled too far
+                if (bullet.userData.distanceTraveled > bulletProperties.range) {
+                    scene.remove(bullet);
+                    bullets.splice(i, 1);
+                    continue;
+                }
+                
+                let hitSomething = false;
+                
+                // First check flying targets using distance check (since they're special)
+                for (let j = flyingTargets.length - 1; j >= 0; j--) {
+                    const target = flyingTargets[j];
+                    
+                    // Skip if already falling
+                    if (target.userData.isFalling) continue;
+                    
+                    // Use large hitbox (5 units)
+                    const distance = bullet.position.distanceTo(target.position);
+                    if (distance < 5) {
+                        // Handle flying target hit (existing code)
+                        console.log("Flying target hit!");
+                        
+                        // Create impact effect
+                        createImpactEffect(
+                            bullet.position.clone(),
+                            new THREE.Vector3().subVectors(bullet.position, target.position).normalize()
+                        );
+                        
+                        // Apply damage to the flying target
+                        if (target.userData.health === undefined) {
+                            target.userData.health = flyingTargetProperties.hitPoints;
+                        }
+                        target.userData.health--;
+                        
+                        // Apply knockback effect
+                        const knockbackDirection = bullet.userData.direction.clone();
+                        target.userData.knockback = {
+                            velocity: knockbackDirection.multiplyScalar(flyingTargetProperties.knockback.force),
+                            startTime: Date.now(),
+                            active: true
+                        };
+                        
+                        // Visual feedback - flash the target
+                        const originalColor = target.userData.originalColor;
+                        const originalMaterial = target.material.clone();
+                        
+                        // Flash white
+                        target.material.color.set(0xffffff);
+                        target.material.emissive.set(0xffffff);
+                        target.material.emissiveIntensity = 1.0;
+                        
+                        // Return to original color after flash
+                        setTimeout(() => {
+                            if (target.material) {
+                                target.material.color.setHex(originalColor);
+                                target.material.emissive.setHex(originalColor);
+                                target.material.emissiveIntensity = 0.5;
+                            }
+                        }, 100);
+                        
+                        // Check if target should start falling
+                        if (target.userData.health <= 0) {
+                            console.log("Flying target destroyed!");
+                            target.userData.isFalling = true;
+                            target.userData.velocity = new THREE.Vector3(
+                                (Math.random() - 0.5) * 0.1,
+                                -0.05,
+                                (Math.random() - 0.5) * 0.1
+                            );
+                            
+                            // Create small explosion effect
+                            createExplosion(target.position.clone(), 0.7);
+                        }
+                        
+                        // Remove bullet
+                        scene.remove(bullet);
+                        bullets.splice(i, 1);
+                        hitSomething = true;
+                        break;
+                    }
+                }
+                
+                if (hitSomething) continue;
+                
+                // Create array of objects to test with raycaster
+                const objectsToTest = [];
+                
+                // Add all regular targets
+                for (let j = 0; j < targets.length; j++) {
+                    const target = targets[j];
+                    if (!target.userData.isExploding && !target.userData.isRespawning) {
+                        objectsToTest.push(target);
+                    }
+                }
+                
+                // Add all crates
+                for (let j = 0; j < crates.length; j++) {
+                    const crate = crates[j];
+                    if (!crate.userData.isExploding && !crate.userData.isRespawning) {
+                        objectsToTest.push(crate);
+                    }
+                }
+                
+                // Use raycaster to test for intersections with all objects at once
+                const intersects = raycaster.intersectObjects(objectsToTest);
+                
+                if (intersects.length > 0) {
+                    const hit = intersects[0];
+                    const hitObject = hit.object;
+                    
+                    // Find where the bullet would be at the time of intersection
+                    const hitPosition = prevPosition.clone().add(
+                        bullet.userData.direction.clone().multiplyScalar(hit.distance)
+                    );
+                    
+                    // Check if target was hit
+                    if (targets.includes(hitObject)) {
+                        console.log("Target hit!");
+                        
+                        // Create impact effect
+                        createImpactEffect(
+                            hitPosition,
+                            hit.face.normal
+                        );
+                        
+                        // Apply damage
+                        if (hitObject.userData.health === undefined) {
+                            hitObject.userData.health = targetProperties.hitPoints;
+                        }
+                        hitObject.userData.health--;
+                        
+                        // Visual feedback - flash the target
+                        const originalColor = hitObject.userData.originalColor;
+                        const originalEmissive = hitObject.userData.originalEmissive;
+                        
+                        // Flash white
+                        hitObject.material.color.set(0xffffff);
+                        hitObject.material.emissive.set(0xffffff);
+                        hitObject.material.emissiveIntensity = 1.0;
+                        
+                        // Return to original color after flash
+                        setTimeout(() => {
+                            if (hitObject.material) {
+                                hitObject.material.color.copy(originalColor);
+                                hitObject.material.emissive.copy(originalEmissive);
+                                hitObject.material.emissiveIntensity = 0.5;
+                            }
+                        }, targetProperties.flashDuration);
+                        
+                        // Check if target is destroyed
+                        if (hitObject.userData.health <= 0) {
+                            console.log("Target destroyed!");
+                            hitObject.userData.isExploding = true;
+                            
+                            // Create explosion at target position
+                            createExplosion(hitObject.position.clone(), 1.0);
+                            
+                            // Hide the target
+                            scene.remove(hitObject);
+                            
+                            // Set up respawn after delay
+                            hitObject.userData.isRespawning = true;
+                            setTimeout(() => {
+                                // Reset target
+                                hitObject.userData.health = targetProperties.hitPoints;
+                                hitObject.userData.isExploding = false;
+                                hitObject.userData.isRespawning = false;
+                                
+                                // Reset position and add back to scene
+                                hitObject.position.copy(hitObject.userData.originalPosition);
+                                hitObject.material.color.copy(hitObject.userData.originalColor);
+                                hitObject.material.emissive.copy(hitObject.userData.originalEmissive);
+                                scene.add(hitObject);
+                            }, targetProperties.respawnTime);
+                        }
+                    }
+                    
+                    // Check if crate was hit
+                    else if (crates.includes(hitObject)) {
+                        console.log("Crate hit!");
+                        
+                        // Create impact effect with wooden debris
+                        createImpactEffect(
+                            hitPosition,
+                            hit.face.normal,
+                            'wood'
+                        );
+                        
+                        // Apply damage
+                        if (hitObject.userData.health === undefined) {
+                            hitObject.userData.health = crateProperties.hitPoints;
+                        }
+                        hitObject.userData.health--;
+                        
+                        // Visual feedback - flash the crate
+                        const originalMaterial = hitObject.userData.originalMaterial;
+                        
+                        // Flash white by changing the material temporarily
+                        const flashMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
+                        hitObject.material = flashMaterial;
+                        
+                        // Return to original material after flash
+                        setTimeout(() => {
+                            if (hitObject.material) {
+                                hitObject.material = originalMaterial.clone();
+                            }
+                        }, crateProperties.flashDuration);
+                        
+                        // Check if crate is destroyed
+                        if (hitObject.userData.health <= 0) {
+                            console.log("Crate destroyed!");
+                            hitObject.userData.isExploding = true;
+                            
+                            // Create explosion at crate position
+                            createExplosion(hitObject.position.clone(), 1.0);
+                            
+                            // Hide the crate
+                            scene.remove(hitObject);
+                            
+                            // Set up respawn after delay
+                            hitObject.userData.isRespawning = true;
+                            setTimeout(() => {
+                                // Reset crate
+                                hitObject.userData.health = crateProperties.hitPoints;
+                                hitObject.userData.isExploding = false;
+                                hitObject.userData.isRespawning = false;
+                                
+                                // Reset position and add back to scene
+                                hitObject.position.copy(hitObject.userData.originalPosition);
+                                hitObject.material = hitObject.userData.originalMaterial.clone();
+                                scene.add(hitObject);
+                            }, crateProperties.respawnTime);
+                        }
+                    }
+                    
+                    // Remove bullet
+                    scene.remove(bullet);
+                    bullets.splice(i, 1);
+                    continue;
+                }
+                
+                // Check for collisions with walls and ground (if no other collisions)
+                // Create another raycaster for environment collisions
+                const envRaycaster = new THREE.Raycaster(
+                    prevPosition,
+                    bullet.userData.direction,
+                    0,
+                    bulletProperties.speed
+                );
+                
+                const envIntersects = envRaycaster.intersectObjects([ground, ...walls]);
+                
+                if (envIntersects.length > 0) {
+                    const impact = envIntersects[0];
+                    
+                    // Create impact effect based on surface
+                    createImpactEffect(
+                        impact.point,
+                        impact.face.normal
+                    );
+                    
+                    // Remove bullet
+                    scene.remove(bullet);
+                    bullets.splice(i, 1);
+                }
+            }
+        }
+
+        // Add this function to update the detached parts
+        function updateDetachedParts() {
+            if (!window.detachedParts) window.detachedParts = [];
+            
+            const now = Date.now();
+            
+            for (let i = window.detachedParts.length - 1; i >= 0; i--) {
+                const part = window.detachedParts[i];
+                
+                // Check if the part should be removed (5 seconds lifetime)
+                if (!part.userData.createdAt || now - part.userData.createdAt > 5000) {
+                    // Remove old parts
+                    scene.remove(part);
+                    window.detachedParts.splice(i, 1);
+                    continue;
+                }
+                
+                // Apply physics for remaining parts
+                part.userData.velocity.y -= player.gravity;
+                part.position.add(part.userData.velocity);
+                
+                // Apply rotation
+                if (part.userData.rotationSpeed) {
+                    part.rotation.x += part.userData.rotationSpeed.x || 0;
+                    part.rotation.y += part.userData.rotationSpeed.y || 0;
+                    part.rotation.z += part.userData.rotationSpeed.z || 0;
+                }
+                
+                // Check if it hit the ground
+                if (part.position.y <= 0.5) {
+                    // Create small impact
+                    createImpactEffect(
+                        part.position.clone(),
+                        new THREE.Vector3(0, 1, 0)
+                    );
+                    
+                    // Remove part
+                    scene.remove(part);
+                    window.detachedParts.splice(i, 1);
+                }
+            }
+        }
+
+        // Add variables for FPS calculation
+        let lastFrameTime = 0;
+        let frameCount = 0;
+        let fps = 0;
+        let lastFpsUpdate = 0;
+
+        // Add this function for updating the game info display
+        function updateGameInfo() {
+            // Calculate FPS
+            const now = performance.now();
+            frameCount++;
+            
+            if (now - lastFpsUpdate > 1000) {
+                fps = Math.round((frameCount * 1000) / (now - lastFpsUpdate));
+                frameCount = 0;
+                lastFpsUpdate = now;
+            }
+            
+            // Get active keys
+            const activeKeysList = Object.keys(keys).filter(key => keys[key]).join(', ') || 'None';
+            
+            // Calculate velocity magnitude
+            const velocityMagnitude = Math.sqrt(
+                player.velocity.x * player.velocity.x + 
+                player.velocity.y * player.velocity.y + 
+                player.velocity.z * player.velocity.z
+            ).toFixed(2);
+            
+            // Calculate direction in degrees
+            const direction = ((Math.atan2(camera.rotation.y, camera.rotation.x) * 180 / Math.PI) + 180).toFixed(0);
+            
+            // Update the display
+            document.getElementById('fps').textContent = fps;
+            document.getElementById('position').textContent = `${camera.position.x.toFixed(1)}, ${camera.position.y.toFixed(1)}, ${camera.position.z.toFixed(1)}`;
+            document.getElementById('velocity').textContent = velocityMagnitude;
+            document.getElementById('direction').textContent = `${direction}°`;
+            document.getElementById('activeKeys').textContent = activeKeysList;
+            document.getElementById('bulletCount').textContent = bullets.length;
+            document.getElementById('particleCount').textContent = impactParticles.length + shockwaveEffects.length;
+        }
+
+        // Keep only the first jumpPadProperties declaration (around line 1213)
+        const jumpPadProperties = {
+            color: 0x00ffff,        // Cyan color
+            emissive: 0x0088aa,     // Slight glow
+            boostForce: 0.5,        // Standard jump boost force
+            cooldown: 250,          // Standard cooldown 
+            detectionRange: 4.0     // Standard detection range
+        };
+
+        // Create the jump pad function - add this after the createCrate function
+        function createJumpPad(x, y, z, width = 3, height = 0.3, depth = 3) {
+            // Standardize jump pad sizes
+            width = 3;  // Standard width for all jump pads
+            height = 0.3;  // Standard height
+            depth = 3;  // Standard depth
+            
+            // Create a simple jump pad without arrows or animation
+            const jumpPadGeometry = new THREE.BoxGeometry(width, height, depth);
+            const jumpPadMaterial = new THREE.MeshStandardMaterial({
+                color: 0x00ffff,        // Cyan color
+                emissive: 0x0088aa,     // Slight glow
+                emissiveIntensity: 0.7, // Constant intensity (no animation)
+                metalness: 0.8,
+                roughness: 0.2
+            });
+            
+            const jumpPad = new THREE.Mesh(jumpPadGeometry, jumpPadMaterial);
+            jumpPad.position.set(x, y, z);
+            
+            // Simplified userData - no animation variables
+            jumpPad.userData = {
+                isJumpPad: true,
+                lastUsed: 0,
+                boostMultiplier: 1.0
+            };
+            
+            scene.add(jumpPad);
+            return jumpPad;
+        }
+
+        // Replace with clean initialization of the jumpPads array
+        const jumpPads = [];
+
+        // Initialize the platforms array before using it
+        const platforms = [];
+
+        // Replace the platformPositions array with this updated version
+        const platformPositions = [
+            // Starter platforms near player's starting position (z=10)
+            {x: 5, y: 0, z: -10},       // First starter platform - at ground level directly in front of player
+            {x: 20, y: 15, z: -20},   // Second starter platform - one level higher and to the right
+            
+            // Ground level platforms (height 0)
+            {x: -40, y: 0, z: -40},
+            {x: 40, y: 0, z: -40},
+            {x: 0, y: 0, z: -80},
+            {x: -60, y: 0, z: 0},
+            {x: 60, y: 0, z: 0},
+            
+            // Level 1 platforms (height 20)
+            {x: -30, y: 20, z: -40},
+            {x: 30, y: 20, z: -40},
+            {x: 0, y: 20, z: -70},
+            {x: -50, y: 20, z: -10},
+            {x: 50, y: 20, z: -10},
+            
+            // Level 2 platforms (height 40) 
+            {x: -16, y: 40, z: -40},
+            {x: 16, y: 40, z: -40},
+            {x: 0, y: 40, z: -56},
+            {x: -30, y: 40, z: -24},
+            {x: 30, y: 40, z: -24},
+            
+            // Level 3 platforms (height 60)
+            {x: -20, y: 60, z: -40},
+            {x: 20, y: 60, z: -40},
+            {x: 0, y: 60, z: -60},
+            {x: 0, y: 60, z: -20},
+            {x: -40, y: 60, z: -70},
+            {x: 40, y: 60, z: -70},
+            {x: -60, y: 60, z: -50},
+            {x: 60, y: 60, z: -50},
+            
+            // Level 4 platforms (height 80)
+            {x: -10, y: 80, z: -50},
+            {x: 10, y: 80, z: -50},
+            {x: -10, y: 80, z: -30},
+            {x: 10, y: 80, z: -30},
+            {x: 0, y: 80, z: -40},
+            
+            // Level 5 platforms (height 100)
+            {x: -24, y: 100, z: -40},
+            {x: 24, y: 100, z: -40},
+            {x: 0, y: 100, z: -64},
+            {x: 0, y: 100, z: -16},
+            
+            // Level 6 platforms (height 120)
+            {x: -12, y: 120, z: -40},
+            {x: 12, y: 120, z: -40},
+            {x: 0, y: 120, z: -52},
+            {x: 0, y: 120, z: -28},
+            
+            // Final level platform (height 140)
+            {x: 0, y: 140, z: -40}
+        ];
+
+        // Clear the existing platforms and jump pads arrays
+        platforms.length = 0;
+        jumpPads.length = 0;
+
+        // Generate all platforms and jump pads from the positions array
+        platformPositions.forEach(pos => {
+            // Create a platform at each position
+            const platform = createPlatform(pos.x, pos.y, pos.z);
+            platforms.push(platform);
+            
+            // Check if this is the top platform (at height 140)
+            const isTopPlatform = pos.y === 140;
+            
+            if (isTopPlatform) {
+                // Create a special red glowing jump pad for the top platform
+                const topJumpPad = createJumpPad(pos.x, pos.y + 0.15, pos.z, 4, 0.4, 4);
+                
+                // Customize the top jump pad to be bright red and highly emissive
+                topJumpPad.material = new THREE.MeshStandardMaterial({
+                    color: 0xff0000,           // Bright red
+                    emissive: 0xff0000,        // Red glow
+                    emissiveIntensity: 1.0,    // Stronger glow
+                    metalness: 0.9,
+                    roughness: 0.1
+                });
+                
+                // Make it slightly larger
+                topJumpPad.scale.set(1.2, 1.2, 1.2);
+                
+                // Add a pulsing animation
+                topJumpPad.userData.pulseDirection = 1;
+                topJumpPad.userData.pulseValue = 1.0;
+                topJumpPad.userData.isTopJumpPad = true;
+                
+                // Create a glowing sphere around the jump pad (like the sun glow)
+                const glowGeometry = new THREE.SphereGeometry(4, 32, 32);
+                const glowMaterial = new THREE.MeshBasicMaterial({
+                    color: 0xff0000,
+                    transparent: true,
+                    opacity: 0.2,
+                    side: THREE.DoubleSide
+                });
+                const glowSphere = new THREE.Mesh(glowGeometry, glowMaterial);
+                glowSphere.position.copy(topJumpPad.position);
+                scene.add(glowSphere);
+                
+                // Add a second, larger glow for more diffusion
+                const outerGlowGeometry = new THREE.SphereGeometry(7, 32, 32);
+                const outerGlowMaterial = new THREE.MeshBasicMaterial({
+                    color: 0xff0000,
+                    transparent: true,
+                    opacity: 0.1,
+                    side: THREE.DoubleSide
+                });
+                const outerGlowSphere = new THREE.Mesh(outerGlowGeometry, outerGlowMaterial);
+                outerGlowSphere.position.copy(topJumpPad.position);
+                scene.add(outerGlowSphere);
+                
+                // Store references to glow objects for animation
+                topJumpPad.userData.glowSphere = glowSphere;
+                topJumpPad.userData.outerGlowSphere = outerGlowSphere;
+                
+                jumpPads.push(topJumpPad);
+            } else {
+                // Create a regular jump pad for all other platforms
+                const jumpPad = createJumpPad(pos.x, pos.y + 0.15, pos.z);
+                jumpPads.push(jumpPad);
+            }
+        });
+
+        // Standardize the platform creation function for consistent appearance
+        function createPlatform(x, y, z) {
+            // Standard dimensions for all platforms
+            const width = 5;
+            const height = 0.5;
+            const depth = 5;
+            
+            // Create platform with a consistent appearance
+            const platformGeometry = new THREE.BoxGeometry(width, height, depth);
+            
+            // Use a consistent texture for all platforms
+            const metalTexture = textureLoader.load('https://images.pexels.com/photos/978503/pexels-photo-978503.jpeg');
+            metalTexture.wrapS = metalTexture.wrapT = THREE.RepeatWrapping;
+            metalTexture.repeat.set(2, 2);
+            
+            const platformMaterial = new THREE.MeshStandardMaterial({
+                color: 0xaaaaaa,         // Consistent gray color
+                map: metalTexture,
+                metalness: 0.6,          
+                roughness: 0.4,          
+                emissive: 0x222222,      
+                emissiveIntensity: 0.3   
+            });
+            
+            const platform = new THREE.Mesh(platformGeometry, platformMaterial);
+            platform.position.set(x, y, z);
+            
+            scene.add(platform);
+            return platform;
+        }
+
+        // Standardize the jump pad creation function for consistent appearance
+        function createJumpPad(x, y, z) {
+            // Standard dimensions for all jump pads
+            const width = 3;
+            const height = 0.3;
+            const depth = 3;
+            
+            // Create jump pad with consistent appearance
+            const jumpPadGeometry = new THREE.BoxGeometry(width, height, depth);
+            const jumpPadMaterial = new THREE.MeshStandardMaterial({
+                color: 0x00ffff,        // Cyan color
+                emissive: 0x0088aa,     // Slight glow
+                emissiveIntensity: 0.7, // Constant intensity
+                metalness: 0.8,
+                roughness: 0.2
+            });
+            
+            const jumpPad = new THREE.Mesh(jumpPadGeometry, jumpPadMaterial);
+            jumpPad.position.set(x, y, z);
+            
+            // Standard properties for all jump pads
+            jumpPad.userData = {
+                isJumpPad: true,
+                lastUsed: 0,
+                boostMultiplier: 1.0  // All jump pads have identical boost
+            };
+            
+            scene.add(jumpPad);
+            return jumpPad;
+        }
+
+        // Update the updateJumpPads function to animate both the pad and its glow
+        function updateJumpPads() {
+            // Animate the top jump pad
+            for (const jumpPad of jumpPads) {
+                if (jumpPad.userData.isTopJumpPad) {
+                    // Pulse the emissive intensity
+                    if (jumpPad.userData.pulseDirection > 0) {
+                        jumpPad.userData.pulseValue += 0.02;
+                        if (jumpPad.userData.pulseValue >= 1.5) {
+                            jumpPad.userData.pulseDirection = -1;
+                        }
+                    } else {
+                        jumpPad.userData.pulseValue -= 0.02;
+                        if (jumpPad.userData.pulseValue <= 0.8) {
+                            jumpPad.userData.pulseDirection = 1;
+                        }
+                    }
+                    
+                    // Apply the pulse value to the jump pad
+                    jumpPad.material.emissiveIntensity = jumpPad.userData.pulseValue;
+                    
+                    // Apply the pulse to the glow spheres
+                    if (jumpPad.userData.glowSphere) {
+                        jumpPad.userData.glowSphere.material.opacity = 0.1 + (jumpPad.userData.pulseValue * 0.2);
+                        jumpPad.userData.glowSphere.scale.setScalar(0.9 + (jumpPad.userData.pulseValue * 0.2));
+                    }
+                    
+                    if (jumpPad.userData.outerGlowSphere) {
+                        jumpPad.userData.outerGlowSphere.material.opacity = 0.05 + (jumpPad.userData.pulseValue * 0.1);
+                        jumpPad.userData.outerGlowSphere.scale.setScalar(0.95 + (jumpPad.userData.pulseValue * 0.1));
+                    }
+                }
+            }
+        }
+
+        // Create array to store flying targets
+        const flyingTargets = [];
+
+        // Function to create a flying target
+        function createFlyingTarget(spawn = true) {
+            // Random position on the perimeter of the game area
+            let x, y, z;
+            const side = Math.floor(Math.random() * 4); // 0=top, 1=right, 2=bottom, 3=left
+            const areaSize = 80;
+            const height = 20 + Math.random() * 60; // Random height between 40-100
+            
+            switch(side) {
+                case 0: // North
+                    x = -areaSize + Math.random() * areaSize * 2;
+                    z = -areaSize;
+                    break;
+                case 1: // East
+                    x = areaSize;
+                    z = -areaSize + Math.random() * areaSize * 2;
+                    break;
+                case 2: // South
+                    x = -areaSize + Math.random() * areaSize * 2;
+                    z = areaSize - 100;
+                    break;
+                case 3: // West
+                    x = -areaSize;
+                    z = -areaSize + Math.random() * areaSize * 2;
+                    break;
+            }
+            
+            y = height;
+            
+            // Choose a random color
+            const colorIndex = Math.floor(Math.random() * flyingTargetProperties.colors.length);
+            const color = flyingTargetProperties.colors[colorIndex];
+            
+            // Create geometry with some variation
+            const geometry = new THREE.SphereGeometry(flyingTargetProperties.size, 8, 8);
+            
+            // Create material with glowing effect
+            const material = new THREE.MeshStandardMaterial({
+                color: color,
+                emissive: color,
+                emissiveIntensity: 0.5,
+                metalness: 0.7,
+                roughness: 0.3
+            });
+            
+            const target = new THREE.Mesh(geometry, material);
+            target.position.set(x, y, z);
+            
+            // Add wings or decorations to make it look more interesting
+            const wingGeometry = new THREE.BoxGeometry(flyingTargetProperties.size * 2, 0.3, 0.8);
+            const wingMaterial = new THREE.MeshStandardMaterial({
+                color: 0xaaaaaa,
+                metalness: 0.8,
+                roughness: 0.2
+            });
+            
+            const leftWing = new THREE.Mesh(wingGeometry, wingMaterial);
+            leftWing.position.set(-flyingTargetProperties.size * 1.2, 0, 0);
+            target.add(leftWing);
+            
+            const rightWing = new THREE.Mesh(wingGeometry, wingMaterial);
+            rightWing.position.set(flyingTargetProperties.size * 1.2, 0, 0);
+            target.add(rightWing);
+            
+            // Add user data for behavior
+            target.userData = {
+                isFlyingTarget: true,
+                health: flyingTargetProperties.hitPoints,
+                originalColor: color,
+                isHit: false,
+                isFalling: false,
+                isExploding: false,
+                velocity: new THREE.Vector3(),
+                // Calculate a target location to fly toward (center area with some randomness)
+                targetPosition: new THREE.Vector3(
+                    (Math.random() * 60) - 30,
+                    30 + Math.random() * 40,
+                    (Math.random() * 60) - 80
+                ),
+                // Give each target slightly different speeds for variety
+                speed: flyingTargetProperties.speed * (0.8 + Math.random() * 0.4),
+                rotationSpeed: (Math.random() - 0.5) * 0.02 // Random rotation
+            };
+            
+            if (spawn) {
+                scene.add(target);
+                flyingTargets.push(target);
+            }
+            
+            return target;
+        }
+
+        // Function to update flying targets
+        function updateFlyingTargets() {
+            const now = Date.now();
+            
+            // Spawn new targets periodically
+            if (flyingTargets.length < flyingTargetProperties.maxTargets && 
+                (!lastFlyingTargetSpawn || now - lastFlyingTargetSpawn > flyingTargetProperties.spawnInterval)) {
+                createFlyingTarget();
+                lastFlyingTargetSpawn = now;
+            }
+            
+            // Update existing targets
+            for (let i = flyingTargets.length - 1; i >= 0; i--) {
+                const target = flyingTargets[i];
+                
+                if (target.userData.isFalling) {
+                    // Target is falling after being hit
+                    target.userData.velocity.y -= player.gravity * 2; // Apply gravity
+                    target.position.add(target.userData.velocity);
+                    
+                    // Add tumbling rotation while falling
+                    target.rotation.x += 0.05;
+                    target.rotation.z += 0.07;
+                    
+                    // Check for ground collision
+                    if (target.position.y <= flyingTargetProperties.size / 2) {
+                        // Create explosion when hitting ground
+                        createExplosion(
+                            new THREE.Vector3(target.position.x, 0.1, target.position.z), 
+                            1.2 // Slightly larger explosion
+                        );
+                        
+                        // Play explosion sound
+                        if (sounds.explosionSounds && sounds.explosionSounds.length > 0) {
+                            const currentSound = sounds.explosionSounds[sounds.explosionSoundIndex];
+                            currentSound.currentTime = 0;
+                            currentSound.play().catch(err => {});
+                        }
+                        
+                        // Remove from scene and array
+                        scene.remove(target);
+                        flyingTargets.splice(i, 1);
+                    }
+                } else {
+                    // Handle knockback if active
+                    if (target.userData.knockback && target.userData.knockback.active) {
+                        // Apply knockback velocity
+                        target.position.add(target.userData.knockback.velocity);
+                        
+                        // Add some rotation from impact
+                        target.rotation.x += target.userData.knockback.velocity.y * 0.1;
+                        target.rotation.z += target.userData.knockback.velocity.x * 0.1;
+                        
+                        // Reduce knockback velocity over time (damping)
+                        target.userData.knockback.velocity.multiplyScalar(flyingTargetProperties.knockback.recovery);
+                        
+                        // Check if knockback has expired
+                        const knockbackAge = now - target.userData.knockback.startTime;
+                        if (knockbackAge > flyingTargetProperties.knockback.duration || 
+                            target.userData.knockback.velocity.length() < 0.01) {
+                            target.userData.knockback.active = false;
+                        }
+                    } else {
+                        // Regular movement pattern for active targets
+                        
+                        // Move toward target position
+                        const direction = new THREE.Vector3().subVectors(
+                            target.userData.targetPosition,
+                            target.position
+                        ).normalize();
+                        
+                        // Add some sine wave movement for more interesting paths
+                        const time = now / 1000;
+                        direction.y += Math.sin(time * 2 + i) * 0.2;
+                        direction.x += Math.sin(time * 1.5 + i * 2) * 0.1;
+                        
+                        // Apply movement
+                        target.position.add(direction.multiplyScalar(target.userData.speed));
+                        
+                        // Apply rotation for visual interest
+                        target.rotation.y += target.userData.rotationSpeed;
+                        
+                        // If reached target or out of bounds, get a new target
+                        const distanceToTarget = target.position.distanceTo(target.userData.targetPosition);
+                        if (distanceToTarget < 5 || 
+                            Math.abs(target.position.x) > 100 || 
+                            Math.abs(target.position.z) > 100 ||
+                            target.position.y < 0 || 
+                            target.position.y > 150) {
+                            
+                            // Set a new target position
+                            target.userData.targetPosition.set(
+                                (Math.random() * 60) - 30,
+                                30 + Math.random() * 40,
+                                (Math.random() * 60) - 80
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add a variable to track when the last flying target was spawned
+        let lastFlyingTargetSpawn = 0;
+
+        // Add this function to properly clean up impact particles
+        function updateImpactParticles() {
+            const now = Date.now();
+            
+            // Clean up impact particles
+            for (let i = impactParticles.length - 1; i >= 0; i--) {
+                const particle = impactParticles[i];
+                if (!particle.update()) {
+                    // If update returns false (expired), remove from array
+                    impactParticles.splice(i, 1);
+                }
+            }
+            
+            // Clean up shockwave effects
+            for (let i = shockwaveEffects.length - 1; i >= 0; i--) {
+                const shockwave = shockwaveEffects[i];
+                if (!shockwave.update()) {
+                    // If update returns false (expired), remove from array
+                    shockwaveEffects.splice(i, 1);
+                }
+            }
+        }
+
+        // Fix the ImpactParticle update method
+        ImpactParticle.prototype.update = function() {
+            const age = Date.now() - this.createdAt;
+            
+            // Force cleanup after 5 seconds regardless of other conditions
+            if (age > 5000) {
+                scene.remove(this.mesh);
+                return false;
+            }
+            
+            const lifeRatio = age / this.lifetime;
+            
+            if (lifeRatio >= 1) {
+                scene.remove(this.mesh);
+                return false;
+            }
+            
+            // Update position
+            this.mesh.position.x += this.direction.x * this.speed;
+            this.mesh.position.y += this.direction.y * this.speed;
+            this.mesh.position.z += this.direction.z * this.speed;
+            
+            // Apply gravity
+            this.direction.y -= 0.002;
+            
+            // Apply rotation
+            this.mesh.rotation.x += this.rotationSpeed;
+            this.mesh.rotation.y += this.rotationSpeed;
+            
+            // Fade out
+            this.mesh.material.opacity = Math.max(0, 1 - lifeRatio);
+            
+            return true;
+        };
+
+        // Fix the ShockwaveEffect update method
+        ShockwaveEffect.prototype.update = function() {
+            const age = Date.now() - this.createdAt;
+            
+            // Force cleanup after 5 seconds regardless of other conditions
+            if (age > 5000) {
+                scene.remove(this.mesh);
+                return false;
+            }
+            
+            if (age > this.duration) {
+                scene.remove(this.mesh);
+                return false;
+            }
+            
+            const progress = age / this.duration;
+            const scale = this.size + (this.maxSize - this.size) * progress;
+            
+            this.mesh.scale.set(scale, 0.1, scale);
+            this.mesh.material.opacity = 1 - progress;
+            
+            return true;
+        };
+
+        // Update the createImpactEffect function to limit particle count
+        function createImpactEffect(position, normal, surfaceType = 'default') {
+            // Limit number of particles based on existing count to prevent overload
+            const maxTotalParticles = 100; // Cap the total number of particles
+            
+            if (impactParticles.length > maxTotalParticles) {
+                // If we already have too many particles, remove the oldest ones
+                const countToRemove = impactParticles.length - maxTotalParticles + 10;
+                for (let i = 0; i < countToRemove; i++) {
+                    if (impactParticles.length > 0) {
+                        const oldestParticle = impactParticles.shift(); // Remove the oldest
+                        scene.remove(oldestParticle.mesh);
+                    }
+                }
+            }
+            
+            // Rest of the impact effect code...
+        }
+
+        
+        // Update the animate function to include particle management
+        function animate() {
+            requestAnimationFrame(animate);
+            updatePlayer();
+            updateBullets();
+            updateJumpPads();
+            updateFlyingTargets();
+            updateDetachedParts();
+            updateImpactParticles(); // Add this line to clean up particles
+            updateGameInfo();
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Create an explosion effect function
+        function createExplosion(position, scale = 1.0) {
+            // Flash
+            const flashGeo = new THREE.SphereGeometry(2 * scale);
+            const flashMat = new THREE.MeshBasicMaterial({
+                color: 0xffaa00,
+                transparent: true,
+                opacity: 1
+            });
+            const flash = new THREE.Mesh(flashGeo, flashMat);
+            flash.position.copy(position);
+            scene.add(flash);
+            
+            // Fade out flash
+            const startTime = Date.now();
+            const flashDuration = 300;
+            function updateFlash() {
+                const age = Date.now() - startTime;
+                if (age < flashDuration) {
+                    flash.material.opacity = 1 - (age / flashDuration);
+                    flash.scale.multiplyScalar(1.02); // Grow slightly
+                    requestAnimationFrame(updateFlash);
+                } else {
+                    scene.remove(flash);
+                }
+            }
+            updateFlash();
+            
+            // Create explosion particles
+            const particleCount = 30;
+            for (let i = 0; i < particleCount; i++) {
+                // Create randomly directed particles
+                const direction = new THREE.Vector3(
+                    Math.random() * 2 - 1,
+                    Math.random() * 2 - 1,
+                    Math.random() * 2 - 1
+                ).normalize();
+                
+                // Create debris-like particles
+                const debrisProps = {
+                    count: 1,
+                    speed: 0.4 * scale,
+                    size: 0.15 * scale * (0.5 + Math.random() * 0.5),
+                    lifetime: 1000 + Math.random() * 500,
+                    color: 0xff4400,
+                    sizeVariation: 0.5
+                };
+                
+                const particle = new ImpactParticle(position, direction, debrisProps);
+                particle.mesh.material.color.setHSL(
+                    0.05 + Math.random() * 0.05,  // Reddish-orange hue
+                    0.8 + Math.random() * 0.2,    // High saturation
+                    0.5 + Math.random() * 0.5     // Varying brightness
+                );
+                impactParticles.push(particle);
+            }
+            
+            // Create smoke particles
+            const smokeCount = 15;
+            for (let i = 0; i < smokeCount; i++) {
+                const direction = new THREE.Vector3(
+                    Math.random() * 2 - 1,
+                    Math.random() * 1,        // Mostly upward
+                    Math.random() * 2 - 1
+                ).normalize();
+                
+                const smokeProps = {
+                    count: 1,
+                    speed: 0.2 * scale,
+                    size: 0.3 * scale * (0.7 + Math.random() * 0.6),
+                    lifetime: 1500 + Math.random() * 1000,
+                    color: 0x444444,
+                    sizeVariation: 0.3
+                };
+                
+                const smoke = new ImpactParticle(position, direction, smokeProps);
+                smoke.mesh.material.opacity = 0.7;
+                impactParticles.push(smoke);
+            }
+            
+            // Create shockwave
+            const shockwaveProps = {
+                size: 0.5 * scale,
+                maxSize: 4 * scale,
+                duration: 400,
+                color: 0xffaa44
+            };
+            
+            const shockwave = new ShockwaveEffect(position, new THREE.Vector3(0, 1, 0), shockwaveProps);
+            shockwaveEffects.push(shockwave);
+            
+            // Play explosion sound if available
+            if (sounds.explosionSounds && sounds.explosionSounds.length > 0) {
+                // Get the current sound and play it
+                const currentSound = sounds.explosionSounds[sounds.explosionSoundIndex];
+                currentSound.currentTime = 0;
+                currentSound.play().catch(err => console.log('Error playing sound:', err));
+                
+                // Rotate to the next sound for next explosion
+                sounds.explosionSoundIndex = (sounds.explosionSoundIndex + 1) % sounds.explosionSounds.length;
+                console.log('Next explosion sound index:', sounds.explosionSoundIndex);
+            }
+        }
+
+        // Add the createJumpPadEffect function
+        function createJumpPadEffect(position) {
+            // Create vertical particle effect
+            for (let i = 0; i < 15; i++) {
+                const particleProps = {
+                    count: 1,
+                    speed: 0.2 + Math.random() * 0.3,
+                    size: 0.05 + Math.random() * 0.05,
+                    lifetime: 600 + Math.random() * 400,
+                    color: 0x00ffff,
+                    sizeVariation: 0.5
+                };
+                
+                // Create mostly upward direction
+                const angle = Math.random() * Math.PI * 2;
+                const upwardBias = 0.7 + Math.random() * 0.3; // 0.7-1.0 upward component
+                
+                const direction = new THREE.Vector3(
+                    Math.sin(angle) * (1 - upwardBias),  // X component
+                    upwardBias,                          // Y component (mostly up)
+                    Math.cos(angle) * (1 - upwardBias)   // Z component
+                ).normalize();
+                
+                const particle = new ImpactParticle(position, direction, particleProps);
+                impactParticles.push(particle);
+            }
+            
+            // Create a small shockwave
+            const shockwaveProps = {
+                size: 0.5,
+                maxSize: 2.0,
+                duration: 300,
+                color: 0x00ffff
+            };
+            
+            const shockwave = new ShockwaveEffect(
+                new THREE.Vector3(position.x, position.y + 0.1, position.z), 
+                new THREE.Vector3(0, 1, 0),
+                shockwaveProps
+            );
+            shockwaveEffects.push(shockwave);
+        }
+
+        
+        // Function to play the top pad sound
+        function playTopPadSound() {
+            // Reset the sound to the beginning if it's already playing
+            sounds.topPad.currentTime = 0;
+            sounds.topPad.play().catch(error => {
+                console.error("Error playing sound:", error);
+            });
+        }
+
+        // Initialize flying targets at start - increased from 3 to 8
+        for (let i = 0; i < 8; i++) {
+            createFlyingTarget();
+        }
+
+        // Load pictures and add them to the scene
+        const pictures = [
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/1.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/2.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/4.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/5.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/6.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/7.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/8.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/9.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/10.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/11.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/12.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/13.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/14.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/15.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/16.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/17.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/18.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/19.jpg',
+            'https://raw.githubusercontent.com/matusagh/cursor-fps-game/refs/heads/main/pics/20.jpg',
+        ];
+
+        // Track loaded pictures for debugging
+        let loadedPictureCount = 0;
+        const totalPictures = pictures.length;
+
+        pictures.forEach((pictureSrc, index) => {
+            const textureLoader = new THREE.TextureLoader();
+            
+            // Add error handling for texture loading
+            textureLoader.load(
+                // URL
+                pictureSrc,
+                
+                // onLoad callback
+                function(texture) {
+                    loadedPictureCount++;
+                    console.log(`Loaded picture ${index + 1}/${totalPictures}: ${pictureSrc}`);
+                    
+                    // Get image dimensions to calculate aspect ratio
+                    const imageWidth = texture.image.width;
+                    const imageHeight = texture.image.height;
+                    const aspectRatio = imageWidth / imageHeight;
+                    
+                    const pictureMaterial = new THREE.MeshBasicMaterial({ 
+                        map: texture,
+                        side: THREE.DoubleSide // Visible from both sides
+                    });
+                    
+                    // Base size with slight random variation - doubled from 10 to 20
+                    const sizeVariation = 0.8 + (Math.random() * 0.4); // 0.8 to 1.2
+                    const baseSize = 20 * sizeVariation; // Changed from 10 to 20 for 2x size
+                    
+                    // Calculate dimensions that preserve aspect ratio
+                    let pictureWidth, pictureHeight;
+                    
+                    if (aspectRatio >= 1) {
+                        // Landscape or square image
+                        pictureWidth = baseSize;
+                        pictureHeight = baseSize / aspectRatio;
+                    } else {
+                        // Portrait image
+                        pictureWidth = baseSize * aspectRatio;
+                        pictureHeight = baseSize;
+                    }
+                    
+                    // Create a plane with the correct aspect ratio
+                    const pictureGeometry = new THREE.PlaneGeometry(pictureWidth, pictureHeight);
+                    const picturePlane = new THREE.Mesh(pictureGeometry, pictureMaterial);
+                    
+                    // Player's starting position as center of the circle
+                    const playerStartPos = new THREE.Vector3(0, 2.2, 10);
+                    
+                    // Increased radius with 20 pictures for better spacing
+                    const radius = 50; // Increased from 40 to 50
+                    
+                    // Calculate evenly spaced positions around a circle
+                    const angleStep = (2 * Math.PI) / totalPictures; // Even spacing
+                    const angle = index * angleStep;
+                    
+                    // Calculate position on the circle - add slight random variation
+                    const radiusVariation = radius * (0.95 + Math.random() * 0.1); // 95-105% of radius
+                    const x = playerStartPos.x + radiusVariation * Math.cos(angle);
+                    const z = playerStartPos.z + radiusVariation * Math.sin(angle);
+                    
+                    // Position y coordinate to keep bottom edge at consistent height
+                    // For taller images (portrait), we need to raise the center point
+                    const bottomEdgeHeight = 0.1; // Reduced from 0.5 to 0.1 - much closer to ground
+                    const heightVariation = bottomEdgeHeight + (pictureHeight / 2) + (Math.random() * 0.2); // Reduced random height variation from 1 to 0.2
+                    
+                    // Position the picture
+                    picturePlane.position.set(x, heightVariation, z);
+                    
+                    // Calculate the exact direction from picture to player
+                    const directionToPlayer = new THREE.Vector3().subVectors(
+                        playerStartPos,
+                        picturePlane.position
+                    ).normalize();
+                    
+                    // Calculate the exact rotation to face the player
+                    const rotationY = Math.atan2(directionToPlayer.x, directionToPlayer.z);
+                    
+                    // Apply the rotation
+                    picturePlane.rotation.y = rotationY;
+                    
+                    // Add slight random tilt for visual interest (±5° in x and z axes)
+                    picturePlane.rotation.x = (Math.random() - 0.5) * 0.1; // ±5°
+                    picturePlane.rotation.z = (Math.random() - 0.5) * 0.1; // ±5°
+                    
+                    // Add a user data property to identify pictures
+                    picturePlane.userData.isPicture = true;
+                    
+                    // Add to scene
+                    scene.add(picturePlane);
+                    
+                    console.log(`Picture ${index + 1} (${imageWidth}x${imageHeight}, ratio: ${aspectRatio.toFixed(2)}) - Size: ${pictureWidth.toFixed(2)}x${pictureHeight.toFixed(2)}`);
+                },
+                
+                // onProgress callback (not needed but kept for completeness)
+                undefined,
+                
+                // onError callback
+                function(error) {
+                    console.error(`Error loading picture ${index + 1}: ${pictureSrc}`, error);
+                }
+            );
+        });
+
+        // Log total pictures loaded when done
+        setTimeout(() => {
+            console.log(`Successfully loaded ${loadedPictureCount}/${totalPictures} pictures`);
+        }, 5000); // Check after 5 seconds
+
+        // ... rest of the code ...
+    </script>
+</body>
+</html>
